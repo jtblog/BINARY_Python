@@ -1,0 +1,15 @@
+sounddevice
+soundfile
+scipy
+sklearn
+numpy
+pandas
+python-dateutil
+importlib
+statsmodels
+matplotlib
+ipywidgets
+pymysql 
+pynverse
+websocket-client
+json
