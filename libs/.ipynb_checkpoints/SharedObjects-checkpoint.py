@@ -5,6 +5,10 @@ import threading
 import datetime
 import pairs
 import numpy
+import matplotlib.pyplot
+import IPython.display as ipd
+import time
+import threading
 
 class SharedObjects:
     account = pandas.DataFrame()
@@ -21,8 +25,17 @@ class SharedObjects:
     corr_mat = pandas.DataFrame()
     #dataset0 = pandas.DataFrame()
     traded_currencies = []
-    automate = False
-    corr_bd = 0.3
+    alert = False
+    corr_bd = 0.5
+    bool_ping = True
+    
+    def ping(self):
+        self.ws.send(json.dumps({"ping": 1}))
+        time.sleep(180)
+        if (bool_ping is True):
+            tr = threading.Timer(1, self.ping)
+            tr.start()
+        return
     
     def login(self):
         self.ws.run_forever()
@@ -67,10 +80,12 @@ class SharedObjects:
         return
     
     def logout(self):
+        bool_ping = False
         for key in self.prs:
             self.unsubscribe(self.prs.get(key).pid)
         prs = None
         self.ws.send(json.dumps({'logout': 1}))
+        self.ws = None
         return
     
     def process_account(self, message):
@@ -83,6 +98,8 @@ class SharedObjects:
             self.account.loc[key] = {0: str(sl[key])}
         for sym in self.forex_major:
             self.req_history(sym)
+        tr = threading.Timer(1, self.ping)
+        tr.start()
         return
     
     def req_history(self, sym):
@@ -127,10 +144,6 @@ class SharedObjects:
             self.prs[sym] = pairs.Pair(sym, dt, self.ws)
         return
     
-    def ping(self):
-        self.ws.send(json.dumps({"ping": 1}))
-        return
-    
     def pairwise_spreadplot(self, y, x):
         dff = pandas.DataFrame()
         dff[y] = self.spreads.get(y)[x]
@@ -142,7 +155,8 @@ class SharedObjects:
 
         dff['sell'] = dff[y][((dff[y] > dff['upper']) & (dff[y].shift(1) < dff['upper']) | 
                            (dff[y] >  dff['mean']) & (dff[y].shift(1) <  dff['mean']))]
-        return(dff.plot(figsize =(17,10), style=['g', '--r', '--b', '--b', 'm^','cv']))
+        #return(dff.plot(figsize = (17, 10), style=['g', '--r', '--b', '--b', 'm^','cv']))
+        return(dff)
     
     def pairwise_spread(self, y):
         dff = self.spreads.get(y)
@@ -151,12 +165,23 @@ class SharedObjects:
         return(dff)
     
     def pairwise_plot(self, y, x):
+        
         dtf = pandas.DataFrame()
         yy = self.prs.get(y).standardized_prices
         dtf[y] = yy
         xx = self.prs.get(x).standardized_prices
         dtf[x] = xx
-        return(dtf.plot(figsize =(17,10)))
+        dff = self.pairwise_spreadplot(y, x)
+        
+        pplt = matplotlib.pyplot.figure(figsize = (17,10))
+        plt1 = pplt.add_subplot(211)
+        plt2 = pplt.add_subplot(212)
+        plt1.plot(dtf)
+        plt1.set_title('Standardized Prices')
+        plt2.plot(dff[y], 'g', dff['mean'], '--r', dff['upper'], '--b', dff['lower'], '--b', dff['buy'], 'm^', dff['sell'], 'cv')
+        plt2.set_title('Spreads')
+        
+        return
     
     def pair_selection(self):
         prs = self.prs
@@ -179,9 +204,35 @@ class SharedObjects:
                      self.coint_mat.loc[key][ky] < 0.05 and 
                      self.coint_mat.loc[ky][key] < 0.05):
                     if ([key, ky] not in self.ipairs):
-                        self.ipairs.append([key,ky])
+                        self.ipairs.append([key,ky, self.corr_mat.loc[key][ky]])
                 else:
                     return
-        #if(self.automate == True):
-        #    self.signal()
+        if(self.alert == True):
+            self.signal()
         return
+    
+    def signal(self):
+        signals = []
+        for pr in self.ipairs:
+            dff = pandas.DataFrame()
+            dff['spread'] = self.spreads.get(pr[0])[pr[1]]
+            dff['mean'] = dff['spread'].mean()
+            dff['upper'] = dff['mean'] + (2.05*dff['spread'].std())
+            dff['lower'] = dff['mean'] - (2.05*dff['spread'].std())
+            index = len(dff.index.values) - 1 
+            
+            y = self.prs.get(pr[0]).standardized_prices()
+            x = self.prs.get(pr[1]).standardized_prices()
+            b = stats.linregress(x, y).slope
+            
+            if(dff['spread'][index] < dff['lower'][index]):
+                signals.append({pr[0]: ['Buy', 1], pr[1]: ['Sell', abs(b)]})
+                display(ipd.Audio('libs/beep.wav', autoplay=True))
+                #self.Buy(pr[0], self.quantity * 1)
+                #self.Sell(pr[1], self.quantity * abs(b))
+            elif(dff['spread'][index] > dff['upper'][index]):
+                signals.append({pr[0]: ['Sell', 1], pr[1]: ['Buy', abs(b)]})
+                display(ipd.Audio('libs/beep.wav', autoplay=True))
+                #self.Sell(pr[0], self.quantity * 1)
+                #self.Buy(pr[1], self.quantity * abs(b))
+        return(signals)

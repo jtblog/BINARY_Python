@@ -1,5 +1,3 @@
-sounddevice
-soundfile
 scipy
 sklearn
 numpy
@@ -12,4 +10,4 @@ ipywidgets
 pymysql 
 pynverse
 websocket-client
-json
+threading

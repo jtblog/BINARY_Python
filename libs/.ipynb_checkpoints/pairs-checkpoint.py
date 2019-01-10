@@ -84,7 +84,7 @@ class Pair:
         if( (ct_mat is not None and self.sym in ct_mat.index) is True):
             ct_mat.loc[self.sym] = df0.loc[self.sym]
         else:
-            ct_mat = pandas.concat([ct_mat, df0], sort=False)
+            ct_mat = pandas.concat([ct_mat, df0], sort = True)
         
         adfs = None
         spd = None
