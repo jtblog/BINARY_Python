@@ -1,7 +1,6 @@
 import websocket
 import json
 import pandas
-import threading
 import datetime
 import pairs
 import numpy
@@ -10,9 +9,11 @@ import IPython.display as ipd
 import time
 import threading
 from ipywidgets import interact, interactive, fixed, interact_manual
+import re
 
 class SharedObjects:
     account = pandas.DataFrame()
+    debug = ''
     ws = None
     prs = dict()
     error = None
@@ -31,16 +32,21 @@ class SharedObjects:
     bool_ping = True
     period = 5
     proposals = pandas.DataFrame(columns=['symbol','basis','amount','payout','duration','contract', 'spot', 'barrier', 'barrier2'])
+    closed = False
     
     def ping(self):
-        self.ws.send(json.dumps({"ping": 1}))
-        time.sleep(180)
+        try:
+            self.ws.send(json.dumps({"ping": 1}))
+        except websocket.WebSocketConnectionClosedException as e:
+            self.ws.run_forever()
+        time.sleep(60)
         if (self.bool_ping is True):
             tr = threading.Timer(1, self.ping)
             tr.start()
         return
     
-    def login(self, ws=None):
+    def login(self, ws=None, closed=False):
+        self.closed = closed
         if(ws is not None):
             self.ws = ws
         self.ws.run_forever()
@@ -66,24 +72,34 @@ class SharedObjects:
         if ('candles' in message):
             self.process_history(message['echo_req']['ticks_history'], message['candles'])
         if ('error' in message):
-            self.set_error(message['error'])
+            self.set_error(message, message['error'])
         if ('proposal' in message):
             self.process_proposal(message)
         return
             
     
-    def set_error(self, message):
+    def set_error(self, message, err_message):
         self.error = pandas.DataFrame(columns = [0])
-        for key in message:
-            self.error.loc[key] = {0: message[key]}
+        for key in err_message:
+            self.error.loc[key] = {0: err_message[key]}
+        if(err_message['code'] == 'ContractBuyValidationError'):
+            self.debug = message
+            #self.prs.get(message['echo_req']['symbol']).minimum_pip = [int(s) for s in re.findall(r'\b\d+\b', err_message['code'])][0] * 0.001
+            return
         return
     
     def subscribe(self, sym):
-        self.ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+        try:
+            self.ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
+        except websocket.WebSocketConnectionClosedException as e:
+            self.ws.run_forever()
         return
     
     def unsubscribe(self, pid):
-        self.ws.send(json.dumps({"forget": pid}))
+        try:
+            self.ws.send(json.dumps({"forget": pid}))
+        except websocket.WebSocketConnectionClosedException as e:
+            self.ws.run_forever()
         return
     
     def logout(self):
@@ -92,7 +108,9 @@ class SharedObjects:
             self.unsubscribe(self.prs.get(key).pid)
         prs = None
         self.ws.send(json.dumps({'logout': 1}))
+        self.ws.close()
         self.ws = None
+        self.closed = False
         return
     
     def process_account(self, message):
@@ -112,12 +130,15 @@ class SharedObjects:
         return
     
     def req_history(self, sym):
-        self.ws.send(json.dumps({"ticks_history": sym,
+        try:
+            self.ws.send(json.dumps({"ticks_history": sym,
               "end": "latest",
               "start": 1,
               "style": "candles",
               "adjust_start_time": 1,
               "count": self.size}))
+        except websocket.WebSocketConnectionClosedException as e:
+            self.ws.run_forever()
         return
     
     def process_tick(self, message):
@@ -149,6 +170,10 @@ class SharedObjects:
             Close.append(float(candle['close']))
             Epoch.append(datetime.datetime.fromtimestamp(int(candle['epoch'])))
         dt = pandas.DataFrame({'Open': Open, 'High': High, 'Low': Low, 'Close': Close}, index = Epoch)
+        if (self.closed is True):
+            for symb in self.prs:
+                if(self.prs.get(symb).subscribed is False):
+                    self.subscribe(symb)
         if sym not in self.prs:
             self.prs[sym] = pairs.Pair(sym, dt, self.ws)
         return
@@ -208,29 +233,29 @@ class SharedObjects:
         interactive(display(self.corr_mat.loc[self.volatility_indices, self.volatility_indices]))
         return(display(plt))
     
-    def TA_plot(self, y):
+    def TA_plot(self, y, rng):
         dtf = self.prs.get(y).TA(self.period)
-        dtf = dtf.ix[-150:]
+        dtf = dtf.ix[rng:(rng+150)]
         
         pplt = matplotlib.pyplot.figure(figsize = (17,20))
         plt1 = pplt.add_subplot(311)
         plt2 = pplt.add_subplot(312)
         plt3 = pplt.add_subplot(313)
         plt1.plot(dtf['Close'].tolist(),'k', dtf['MA'].tolist(), 'y', dtf['UB'].tolist(), 'r', dtf['LB'].tolist(), 'r')
-        plt1.set_title('Prices (Last 150 Values)')
+        plt1.set_title('Prices')
 
         bins = numpy.linspace(-10, 10, 100)
         plt2.plot(dtf['MACD_Signal'].tolist(), 'r', dtf['MACD'].tolist(), 'b')
         plt2.bar(range(0,150), dtf['MACD_Hist'].tolist(), alpha=0.5)
-        plt2.set_title('Moving Average Convergence Divergence (Last 150 Values)')
+        plt2.set_title('Moving Average Convergence Divergence')
 
         plt3.plot(dtf['RSI'].tolist(), 'k')
-        plt3.plot([70]*150, 'r', [30]*150, 'r')
-        plt3.set_title('Relative Strength Index (Last 150 Values)')
+        plt3.plot(dtf['LOWER_RSI'].tolist(), 'r', dtf['UPPER_RSI'].tolist(), 'r', [dtf['RSI'].mean()]*150, 'b')
+        plt3.set_title('Relative Strength Index')
         return
     
     def ta_plot(self):
-        plt = interactive(self.TA_plot, y = list(self.prs.keys()))
+        plt = interactive(self.TA_plot, y = list(self.prs.keys()), rng = list(range(0, 1290)))
         return(display(plt))
     
     def pair_selection(self):
@@ -245,18 +270,20 @@ class SharedObjects:
         self.corr_mat = self.corr_mat.round(5)
         for key in prs.keys():
             for ky in prs.keys():
-                #if(self.corr_mat.loc[key][ky] >= self.corr_bd and 
-                #   self.coint_mat.loc[key][ky] < 0.05 and 
-                #   self.coint_mat.loc[ky][key] < 0.05 ):
-                #    if ([ky, key] not in self.ipairs):
-                #        self.ipairs.append([key,ky])
-                if(self.corr_mat.loc[key][ky] <= -self.corr_bd and 
-                     self.coint_mat.loc[key][ky] < 0.05 and 
-                     self.coint_mat.loc[ky][key] < 0.05):
-                    if ([key, ky] not in self.ipairs):
-                        self.ipairs.append([key,ky, self.corr_mat.loc[key][ky]])
-                else:
-                    return
+                if(key not in self.volatility_indices and ky not in self.volatility_indices):
+                    #if(self.corr_mat.loc[key][ky] >= self.corr_bd and 
+                    #   self.coint_mat.loc[key][ky] < 0.05 and 
+                    #   self.coint_mat.loc[ky][key] < 0.05 ):
+                    #    if ([ky, key] not in self.ipairs):
+                    #        self.ipairs.append([key,ky])
+                    if(self.corr_mat.loc[key][ky] <= -self.corr_bd and 
+                         self.coint_mat.loc[key][ky] < 0.05 and 
+                         self.coint_mat.loc[ky][key] < 0.05):
+                        if ([key, ky] not in self.ipairs):
+                            self.ipairs.append([key,ky, self.corr_mat.loc[key][ky]])
+                    else:
+                        return
+                
         if(self.alert == True):
             self.signal()
         return
@@ -269,18 +296,18 @@ class SharedObjects:
             dff['mean'] = dff['spread'].mean()
             dff['upper'] = dff['mean'] + (2.05*dff['spread'].std())
             dff['lower'] = dff['mean'] - (2.05*dff['spread'].std())
-            index = len(dff.index.values) - 1 
+            indx = len(dff.index.values) - 1 
             
             y = self.prs.get(pr[0]).standardized_prices()
             x = self.prs.get(pr[1]).standardized_prices()
             b = stats.linregress(x, y).slope
             
-            if(dff['spread'][index] < dff['lower'][index]):
+            if(dff['spread'][indx] < dff['lower'][indx]):
                 signals.append({pr[0]: ['Buy', 1], pr[1]: ['Sell', abs(b)]})
                 display(ipd.Audio('libs/beep.wav', autoplay=True))
                 #self.Buy(pr[0], self.quantity * 1)
                 #self.Sell(pr[1], self.quantity * abs(b))
-            elif(dff['spread'][index] > dff['upper'][index]):
+            elif(dff['spread'][indx] > dff['upper'][indx]):
                 signals.append({pr[0]: ['Sell', 1], pr[1]: ['Buy', abs(b)]})
                 display(ipd.Audio('libs/beep.wav', autoplay=True))
                 #self.Sell(pr[0], self.quantity * 1)

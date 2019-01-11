@@ -16,6 +16,11 @@ class Pair:
     curr_high = None
     curr_low = None
     pid = ''
+    minimum_pip = 0.0
+    trading_pip = 0.0
+    minimum_duration = 5
+    stake = 0.5
+    subscribed = False
     
     
     def __init__(self, symbol, dataframe, ws):
@@ -30,29 +35,32 @@ class Pair:
     def update(self, symbol, pid, time, quote):
         quote = float(quote)
         self.pid = pid
-        ts0 = self.prices.axes[0].tolist()[len(self.prices.axes[0].tolist())-1]
-        if(ts0.minute == time.minute):
-            cl = quote
-            self.curr_high = max(quote, self.curr_high)
-            self.curr_low = min(self.curr_low, quote)
-            opn =  self.prices['Close'][len(self.prices.axes[0].tolist())-2]
-            d = {'Open': [opn], 'High': [self.curr_high], 'Low': [self.curr_low], 'Close': [cl]}
-            dtf = pandas.DataFrame(data = d, index = [time])
-            ts2 = self.prices.axes[0].tolist()[len(self.prices.axes[0].tolist())-2]
-            self.prices = self.prices[:ts2]
-            self.prices = pandas.concat([self.prices, dtf])
-        else:
-            ts = self.prices.axes[0].tolist()[0]
-            self.prices = self.prices.drop(ts)
-            cl = quote
-            self.curr_high = quote
-            self.curr_low = quote
-            opn =  self.prices['Close'][len(self.prices.axes[0].tolist())-1]
-            d = {'Open': [opn], 'High': [self.curr_high], 'Low': [self.curr_low], 'Close': [cl]}
-            dtf = pandas.DataFrame(data = d, index = [time])
-            self.prices = pandas.concat([self.prices, dtf])
-            self.prices = self.prices.round(5)
-        self.standardize_prices()
+        indx = len(self.prices.index.values)
+        
+        if(indx >= 1):
+            ts0 = self.prices.index[indx-1]
+            if(ts0.minute == time.minute):
+                cl = quote
+                self.curr_high = max(quote, self.curr_high)
+                self.curr_low = min(self.curr_low, quote)
+                opn =  self.prices.loc[self.prices.index[indx-2]]['Close']
+                d = {'Open': [opn], 'High': [self.curr_high], 'Low': [self.curr_low], 'Close': [cl]}
+                dtf = pandas.DataFrame(data = d, index = [time])
+                ts2 = self.prices.index[indx-2]
+                self.prices = self.prices[:ts2]
+                self.prices = pandas.concat([self.prices, dtf])
+            else:
+                ts = self.prices.index[0]
+                self.prices = self.prices.drop(ts)
+                cl = quote
+                self.curr_high = quote
+                self.curr_low = quote
+                opn =  self.prices.loc[ts0]['Close']
+                d = {'Open': [opn], 'High': [self.curr_high], 'Low': [self.curr_low], 'Close': [cl]}
+                dtf = pandas.DataFrame(data = d, index = [time])
+                self.prices = pandas.concat([self.prices, dtf])
+                self.prices = self.prices.round(5)
+            self.standardize_prices()
         return
     
     def standardize_prices(self):
@@ -66,7 +74,7 @@ class Pair:
         adfs = dict()
         spd = pandas.DataFrame()
         
-        for ky in prs:
+        for ky in prs.copy():
             x = prs.get(ky).standardized_prices
             y = prs.get(self.sym).standardized_prices
             if(len(x) == len(y) and len(x) > 0 and len(y) > 0):
@@ -101,6 +109,8 @@ class Pair:
         df['UB'] = df['MA'] + (2.05*df['STD'])
         df['LB'] = df['MA'] - (2.05*df['STD'])
         df['RSI'] = ta.momentum.rsi(self.prices['Close'], n=period, fillna=False)
+        df['UPPER_RSI'] = df['RSI'].mean() + (1.6*df['RSI'].std())
+        df['LOWER_RSI'] = df['RSI'].mean() - (1.6*df['RSI'].std())
         df['MACD_Hist'] = ta.trend.macd_diff(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
         df['MACD_Signal'] = ta.trend.macd_signal(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
         df['MACD'] = ta.trend.macd(self.prices['Close'], n_fast=12, n_slow=26, fillna=False)
