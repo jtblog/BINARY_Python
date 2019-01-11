@@ -6,6 +6,7 @@ from sklearn import *
 from statsmodels.tsa.stattools import adfuller
 from scipy import stats
 import warnings
+import ta
 
 class Pair:
     
@@ -91,3 +92,16 @@ class Pair:
         spread = None
         
         return([ct_mat, spreads])
+    
+    def TA(self, period):
+        df = pandas.DataFrame()
+        df['Close'] = self.prices['Close']
+        df['MA'] = self.prices['Close'].rolling(period).mean()
+        df['STD'] = self.prices['Close'].rolling(period).std(ddof=0)
+        df['UB'] = df['MA'] + (2.05*df['STD'])
+        df['LB'] = df['MA'] - (2.05*df['STD'])
+        df['RSI'] = ta.momentum.rsi(self.prices['Close'], n=period, fillna=False)
+        df['MACD_Hist'] = ta.trend.macd_diff(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
+        df['MACD_Signal'] = ta.trend.macd_signal(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
+        df['MACD'] = ta.trend.macd(self.prices['Close'], n_fast=12, n_slow=26, fillna=False)
+        return(df)
