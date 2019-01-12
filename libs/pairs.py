@@ -7,6 +7,8 @@ from statsmodels.tsa.stattools import adfuller
 from scipy import stats
 import warnings
 import ta
+from ipywidgets import interact, interactive, fixed, interact_manual
+import matplotlib.pyplot
 
 class Pair:
     
@@ -101,7 +103,7 @@ class Pair:
         
         return([ct_mat, spreads])
     
-    def TA(self, period):
+    def TA(self, period, rng = 1290):
         df = pandas.DataFrame()
         df['Close'] = self.prices['Close']
         df['MA'] = self.prices['Close'].rolling(period).mean()
@@ -114,4 +116,55 @@ class Pair:
         df['MACD_Hist'] = ta.trend.macd_diff(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
         df['MACD_Signal'] = ta.trend.macd_signal(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
         df['MACD'] = ta.trend.macd(self.prices['Close'], n_fast=12, n_slow=26, fillna=False)
-        return(df)
+        
+        dtf = df.ix[rng:(rng+150)]
+        
+        pplt = matplotlib.pyplot.figure(figsize = (17,20))
+        plt1 = pplt.add_subplot(311)
+        plt2 = pplt.add_subplot(312)
+        plt3 = pplt.add_subplot(313)
+        plt1.plot(dtf['Close'].tolist(),'k', dtf['MA'].tolist(), 'y', dtf['UB'].tolist(), 'r', dtf['LB'].tolist(), 'r')
+        plt1.set_title('Prices')
+
+        bins = numpy.linspace(-10, 10, 100)
+        plt2.plot(dtf['MACD_Signal'].tolist(), 'r', dtf['MACD'].tolist(), 'b')
+        plt2.bar(range(0,150), dtf['MACD_Hist'].tolist(), alpha=0.5)
+        plt2.set_title('Moving Average Convergence Divergence')
+
+        plt3.plot(dtf['RSI'].tolist(), 'k')
+        plt3.plot(dtf['LOWER_RSI'].tolist(), 'r', dtf['UPPER_RSI'].tolist(), 'r', [dtf['RSI'].mean()]*150, 'b')
+        plt3.set_title('Relative Strength Index')
+        return
+    
+    def prime_proposal(self, payout, barrier):
+        if(payout < 104):
+            try:
+                self.ws.send(json.dumps({
+                                 "proposal": 1,
+                                 "amount": str(self.stake),
+                                 "basis": "stake",
+                                 "contract_type": "ONETOUCH",
+                                 "currency": "USD",
+                                 "duration": str(self.minimum_duration),
+                                 "duration_unit": "m",
+                                 "barrier": "+" + str(( abs(barrier) * 105 ) / payout),
+                                 "symbol": self.sym
+                                }))
+            except websocket.WebSocketConnectionClosedException as e:
+                ws.run_forever()
+        elif(payout >= 105):
+            try:
+                self.ws.send(json.dumps({
+                                 "proposal": 1,
+                                 "amount": str(self.stake),
+                                 "basis": "stake",
+                                 "contract_type": "ONETOUCH",
+                                 "currency": "USD",
+                                 "duration": str(self.minimum_duration),
+                                 "duration_unit": "m",
+                                 "barrier": "+" + str( abs(barrier) - 0.001),
+                                 "symbol": self.sym
+                                }))
+            except websocket.WebSocketConnectionClosedException as e:
+                ws.run_forever()
+        return
