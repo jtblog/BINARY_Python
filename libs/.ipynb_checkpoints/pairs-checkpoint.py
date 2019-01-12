@@ -23,6 +23,7 @@ class Pair:
     minimum_duration = 5
     stake = 0.5
     subscribed = False
+    ta_df = pandas.DataFrame()
     
     
     def __init__(self, symbol, dataframe, ws):
@@ -32,6 +33,11 @@ class Pair:
         self.curr_high = float(self.prices['Close'][len(self.prices.axes[0].tolist())-1])
         self.curr_low = self.curr_high
         self.ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
+        try:
+            self.standardize_prices()
+        except:
+            pass
+        
         return
     
     def update(self, symbol, pid, time, quote):
@@ -62,12 +68,29 @@ class Pair:
                 dtf = pandas.DataFrame(data = d, index = [time])
                 self.prices = pandas.concat([self.prices, dtf])
                 self.prices = self.prices.round(5)
-            self.standardize_prices()
+            try:
+                self.standardize_prices()
+            except:
+                pass
         return
     
     def standardize_prices(self):
         y_np = numpy.array(self.prices['Close'].tolist())
         self.standardized_prices = ( (y_np-y_np.mean())/y_np.std() ).tolist()
+        
+        df = pandas.DataFrame()
+        df['Close'] = self.prices['Close']
+        df['MA'] = self.prices['Close'].rolling(self.minimum_duration).mean()
+        df['STD'] = self.prices['Close'].rolling(self.minimum_duration).std(ddof=0)
+        df['UB'] = df['MA'] + (2.05*df['STD'])
+        df['LB'] = df['MA'] - (2.05*df['STD'])
+        df['RSI'] = ta.momentum.rsi(self.prices['Close'], n=self.minimum_duration, fillna=False)
+        df['UPPER_RSI'] = df['RSI'].mean() + (1.6*df['RSI'].std())
+        df['LOWER_RSI'] = df['RSI'].mean() - (1.6*df['RSI'].std())
+        df['MACD_Hist'] = ta.trend.macd_diff(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
+        df['MACD_Signal'] = ta.trend.macd_signal(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
+        df['MACD'] = ta.trend.macd(self.prices['Close'], n_fast=12, n_slow=26, fillna=False)
+        self.ta_df = df
         return
     
     def co_integration(self, prs, ct_mat, spreads):
@@ -104,20 +127,8 @@ class Pair:
         return([ct_mat, spreads])
     
     def TA(self, period, rng = 1290):
-        df = pandas.DataFrame()
-        df['Close'] = self.prices['Close']
-        df['MA'] = self.prices['Close'].rolling(period).mean()
-        df['STD'] = self.prices['Close'].rolling(period).std(ddof=0)
-        df['UB'] = df['MA'] + (2.05*df['STD'])
-        df['LB'] = df['MA'] - (2.05*df['STD'])
-        df['RSI'] = ta.momentum.rsi(self.prices['Close'], n=period, fillna=False)
-        df['UPPER_RSI'] = df['RSI'].mean() + (1.6*df['RSI'].std())
-        df['LOWER_RSI'] = df['RSI'].mean() - (1.6*df['RSI'].std())
-        df['MACD_Hist'] = ta.trend.macd_diff(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
-        df['MACD_Signal'] = ta.trend.macd_signal(self.prices['Close'], n_fast=12, n_slow=26, n_sign=9, fillna=False)
-        df['MACD'] = ta.trend.macd(self.prices['Close'], n_fast=12, n_slow=26, fillna=False)
-        
-        dtf = df.ix[rng:(rng+150)]
+        self.minimum_duration = period
+        dtf = self.ta_df.ix[rng:(rng+150)]
         
         pplt = matplotlib.pyplot.figure(figsize = (17,20))
         plt1 = pplt.add_subplot(311)
@@ -136,35 +147,31 @@ class Pair:
         plt3.set_title('Relative Strength Index')
         return
     
-    def prime_proposal(self, payout, barrier):
-        if(payout < 104):
-            try:
-                self.ws.send(json.dumps({
+    def hedge_onetouch_proposal(self, amount, duration, duration_unit):
+        try:
+            self.ws.send(json.dumps({
                                  "proposal": 1,
-                                 "amount": str(self.stake),
+                                 "amount": str(amount),
                                  "basis": "stake",
                                  "contract_type": "ONETOUCH",
                                  "currency": "USD",
-                                 "duration": str(self.minimum_duration),
-                                 "duration_unit": "m",
-                                 "barrier": "+" + str(( abs(barrier) * 105 ) / payout),
+                                 "duration": str(duration),
+                                 "duration_unit": duration_unit,
+                                 "barrier": "+" + str(self.trading_pip),
                                  "symbol": self.sym
                                 }))
-            except websocket.WebSocketConnectionClosedException as e:
-                ws.run_forever()
-        elif(payout >= 105):
-            try:
-                self.ws.send(json.dumps({
+            self.ws.send(json.dumps({
                                  "proposal": 1,
-                                 "amount": str(self.stake),
+                                 "amount": str(amount),
                                  "basis": "stake",
                                  "contract_type": "ONETOUCH",
                                  "currency": "USD",
-                                 "duration": str(self.minimum_duration),
-                                 "duration_unit": "m",
-                                 "barrier": "+" + str( abs(barrier) - 0.001),
+                                 "duration": str(duration),
+                                 "duration_unit": duration_unit,
+                                 "barrier": "-" + str(self.trading_pip),
                                  "symbol": self.sym
                                 }))
-            except websocket.WebSocketConnectionClosedException as e:
-                ws.run_forever()
+        except websocket.WebSocketConnectionClosedException as e:
+            self.ws.run_forever()
+        return
         return

@@ -52,7 +52,7 @@ class SharedObjects:
       "barrier2": "",
       "symbol": curr_symbol
     }
-    proposals = pandas.DataFrame(columns=['symbol','basis','amount','payout','duration','contract', 'spot', 'barrier', 'barrier2'])
+    proposals = pandas.DataFrame(columns=['symbol','basis','amount','payout','duration','contract_type', 'spot', 'barrier', 'barrier2'])
     closed = False
     
     def ping(self, dummy=None):
@@ -132,11 +132,11 @@ class SharedObjects:
             if (qunty == 'all'):
                 for key in self.proposal.index:
                     self.ws.send(json.dumps(
-                        {"buy": self.proposal.loc[key]['symbol'], 
+                        {"buy": key, 
                          "price": self.proposal.loc[key]['amount']}))
             else:
                 self.ws.send(json.dumps(
-                        {"buy": self.proposal.loc[self.prop]['symbol'], 
+                        {"buy": self.prop, 
                          "price": self.proposal.loc[self.prop]['amount']}))
         except websocket.WebSocketConnectionClosedException as e:
             self.ws.run_forever()
@@ -152,13 +152,15 @@ class SharedObjects:
     def logout(self, dummy = None):
         clear_output()
         self.bool_ping = False
-        for key in self.prs:
-            self.unsubscribe(self.prs.get(key).pid)
-        prs = None
+        if self.prs is not None:
+            for key in self.prs:
+                self.unsubscribe(self.prs.get(key).pid)
         self.ws.send(json.dumps({'logout': 1}))
         self.ws.close()
         self.ws = None
         self.closed = False
+        self.prs = None
+        self = None
         return
     
     def process_account(self, message):
@@ -213,13 +215,15 @@ class SharedObjects:
         symbol = message['symbol']
         time = datetime.datetime.fromtimestamp(int(message['epoch']))
         if(symbol in self.prs):
-            self.prs.get(symbol).update(symbol, pid, time, quote)
-            #self.prs.get(symbol).standardize_prices()
-            resp = self.prs.get(symbol).co_integration(self.prs, self.coint_mat, self.spreads)
-            self.coint_mat = resp[0]
-            self.coint_mat = self.coint_mat.fillna(0.999)
-            self.coint_mat= self.coint_mat.round(5)
-            self.spreads = resp[1]
+            try:
+                self.prs.get(symbol).update(symbol, pid, time, quote)
+                resp = self.prs.get(symbol).co_integration(self.prs, self.coint_mat, self.spreads)
+                self.coint_mat = resp[0]
+                self.coint_mat = self.coint_mat.fillna(0.999)
+                self.coint_mat= self.coint_mat.round(5)
+                self.spreads = resp[1]
+            except:
+                pass
             self.pair_selection()
         return
     
@@ -243,6 +247,14 @@ class SharedObjects:
         if sym not in self.prs:
             self.prs[sym] = pairs.Pair(sym, dt, self.ws)
             self.curr_symbol = sym
+            try:
+                resp = self.prs.get(sym).co_integration(self.prs, self.coint_mat, self.spreads)
+                self.coint_mat = resp[0]
+                self.coint_mat = self.coint_mat.fillna(0.999)
+                self.coint_mat= self.coint_mat.round(5)
+                self.spreads = resp[1]
+            except:
+                pass
             threading.Thread(target=self.prime).start()
         return
     
@@ -257,7 +269,6 @@ class SharedObjects:
 
         dff['sell'] = dff[y][((dff[y] > dff['upper']) & (dff[y].shift(1) < dff['upper']) | 
                            (dff[y] >  dff['mean']) & (dff[y].shift(1) <  dff['mean']))]
-        #return(dff.plot(figsize = (17, 10), style=['g', '--r', '--b', '--b', 'm^','cv']))
         return(dff)
     
     def pairwise_spread(self, y):
@@ -308,11 +319,9 @@ class SharedObjects:
     def TA_plot(self, y, rng):
         self.prs.get(y).TA(self.period, rng)
         return
-    
     def ta(self):
         threading.Thread(target=self.ta_plot).start()
         return
-    
     def ta_plot(self):
         plt = interactive(self.TA_plot, y = list(self.prs.keys()), rng = list(range(0, 1290)))
         return(display(plt))
@@ -328,6 +337,12 @@ class SharedObjects:
         self.corr_mat = dtf.corr(method='kendall').replace(1, 0)
         self.corr_mat = self.corr_mat.round(5)
         for key in prs.keys():
+            if(key in self.volatility_indices):
+                df = self.prs.get(key).ta_df
+                lts = df.index[len(df.index) - 1]
+                if(df.loc[lts]['RSI'] > df.loc[lts]['UPPER_RSI'] or df.loc[lts]['RSI'] < df.loc[lts]['LOWER_RSI']):
+                    self.prs.get(key).hedge_onetouch_proposal(self.stake, self.period, self.params.get('duration_unit'))
+                    return
             for ky in prs.keys():
                 if(key not in self.volatility_indices and ky not in self.volatility_indices):
                     #if(self.corr_mat.loc[key][ky] >= self.corr_bd and 
@@ -379,8 +394,8 @@ class SharedObjects:
         basis = message['echo_req']['basis']
         amount = float(message['echo_req']['amount'])
         payout = ((float(message['proposal']['payout']) - amount ) / amount ) * 100
-        duration = message['echo_req']['duration'] + message['echo_req']['duration_unit']
-        contract = message['echo_req']['contract_type']
+        duration = message['echo_req']['duration']
+        contract_type = message['echo_req']['contract_type']
         spot = float(message['proposal']['spot'])
         barrier = ''
         barrier2 = ''
@@ -390,7 +405,7 @@ class SharedObjects:
             barrier2 = message['echo_req']['barrier2']
         
         if( (payout < 103) and symbol in self.volatility_indices[:5]):
-            #display(ipd.Audio('sounds/beep.wav', autoplay=True))
+            display(ipd.Audio('sounds/beep-09.wav', autoplay=True))
             self.unsubscribe(pid)
         else:
             self.prs.get(symbol).trading_pip = abs(barrier)
@@ -399,12 +414,13 @@ class SharedObjects:
             self.params['amount'] = amount
             self.params['payout'] = payout
             self.params['duration'] = duration
-            self.params['contract_type'] = contract
-            self.params['spot'] = spot
+            self.params['contract_type'] = contract_type
             self.params['barrier'] = barrier
             self.params['barrier2'] = barrier2
 
-            df0 = pandas.DataFrame(prop, index = [pid])
+            df0 = pandas.DataFrame(self.params, index = [pid])
+            df0['payout'] = payout
+            df0['spot'] = spot
             if( (pid in proposals.index) is True):
                 proposals.loc[pid] = df0.loc[pid]
             else:
@@ -417,23 +433,25 @@ class SharedObjects:
                     'ta', 'proposals']
     
     def views(self):
-        stake_widget = widgets.Text(value=str(self.params.get('amount')), description='Stake:', disabled=False, continuous_update=True)
+        stake_widget = widgets.Text(value=str(self.params.get('amount')), description='Stake:', disabled=self.automate, continuous_update=True)
         payout_widget = widgets.Text(value = '%', description='Payout:',disabled=True, continuous_update=True)
 
-        barrier_widget = widgets.Text(value=str(self.params.get('barrier')), description='Barrier:', disabled=False, continuous_update=True)
-        contr_type_widget = widgets.Dropdown(options=self.contract_type, value=str(self.params.get('contract_type')), description='', disabled=True, continuous_update=True)
-        barrier2_widget = widgets.Text(value=str(self.params.get('barrier2')), description='Barrier2:', disabled=True, continuous_update=True)
+        barrier_widget = widgets.Text(value=str(self.params.get('barrier')), description='Barrier:', disabled=self.automate, continuous_update=True)
+        contr_type_widget = widgets.Dropdown(options=self.contract_type, value=str(self.params.get('contract_type')), description='', disabled=self.automate, continuous_update=True)
+        barrier2_widget = widgets.Text(value=str(self.params.get('barrier2')), description='Barrier2:', disabled=self.automate, continuous_update=True)
 
-        dur_widget = widgets.Text(value=str(self.params.get('duration')), description='Duration:', disabled=False, continuous_update=True)
-        dur_type_widget = widgets.Dropdown(options=['Ticks', 'Seconds','Minutes', 'Hours', 'Days'], value='Minutes',disabled=False, continuous_update=True)
+        dur_widget = widgets.Text(value=str(self.params.get('duration')), description='Duration:', disabled=self.automate, continuous_update=True)
+        dur_type_widget = widgets.Dropdown(options=['Ticks', 'Seconds','Minutes', 'Hours', 'Days'], value='Minutes',disabled=self.automate, continuous_update=True)
 
         sym_widget = widgets.Dropdown(options=self.volatility_indices + self.forex_major, description='Pair:', disabled=False, continuous_update=True, value = self.curr_symbol)
         proposal_bt = widgets.Button(description='Proposal', disabled=False, tooltip='Proposal')
+        save_proposal_bt = widgets.Button(description='Save Proposal', disabled=False, tooltip='Save Proposal')
+        unsub_sym_bt = widgets.Button(description='Unsubscribe Pair', disabled=False, tooltip='Unsubscribe Pair')
 
-        hbox1 = widgets.HBox([ stake_widget, payout_widget ])
+        hbox1 = widgets.HBox([ stake_widget, payout_widget, sym_widget ])
         hbox2 = widgets.HBox([  barrier_widget, contr_type_widget, barrier2_widget])
         hbox3 = widgets.HBox([  dur_widget, dur_type_widget])
-        hbox4 = widgets.HBox([  sym_widget, proposal_bt])
+        hbox4 = widgets.HBox([ proposal_bt, save_proposal_bt, unsub_sym_bt])
         vbox0 = widgets.VBox([hbox1, hbox2, hbox3, hbox4])
 
         alert_box = widgets.Checkbox(value=self.alert,description='Alert',disabled=False, continuous_update=True)
@@ -458,7 +476,9 @@ class SharedObjects:
         hbox5 = widgets.HBox([  rem_bt, purchase_bt])
         vbox1 = widgets.VBox([view_widget0, purchaseall_bt, view_widget1, hbox5])
 
-        children = [vbox0, vbox1, vbox2]
+        reload_pairs_bt = widgets.Button(description='Reload Pairs', disabled=False, tooltip='Reload Pairs')
+        
+        children = [vbox0, vbox1, vbox2, reload_pairs_bt]
         tab = widgets.Tab()
         tab.children = children
         
@@ -479,9 +499,25 @@ class SharedObjects:
         rem_bt.on_click(self.remove_proposal)
         purchase_bt.on_click(self.make_purchase)
         purchaseall_bt.on_click(self.makeall_purchase)
+        reload_pairs_bt.on_click(self.reload_pairs)
         return(tab)
     
-    def make_proposal(self): 
+    def reload_pairs0(self):
+        for sym in self.prs:
+            try:
+                self.prs.get(sym).standardize_prices()
+                resp = self.prs.get(sym).co_integration(self.prs, self.coint_mat, self.spreads)
+                self.coint_mat = resp[0]
+                self.coint_mat = self.coint_mat.fillna(0.999)
+                self.coint_mat= self.coint_mat.round(5)
+                self.spreads = resp[1]
+            except:
+                pass
+        return
+    def reload_pairs(self, dummy=None): 
+        threading.Thread(target=self.reload_pairs0).start()
+        return
+    def make_proposal(self, dummy=None): 
         try:
             self.ws.send(json.dumps(self.params))
         except websocket.WebSocketConnectionClosedException as e:
@@ -492,15 +528,16 @@ class SharedObjects:
         return
     def change_barrier(self, change): 
         self.params['barrier'] = change['new']
-        if(change['new'] == ''):
+        if(change['new'].strip() == '' or change['new'].strip() == str(None)):
             del self.params['barrier']
+            self.params['barrier'] = '+' + str(self.prs.get(self.curr_symbol).trading_pip)
         return
     def change_contract_type(self, change): 
         self.params['contract_type'] = change['new']
         return
     def change_barrier2(self, change): 
         self.params['barrier2'] = change['new']
-        if(change['new'] == ''):
+        if(change['new'].strip() == '' or change['new'].strip() == str(None)):
             del self.params['barrier2']
         return
     def change_duration(self, change): 
@@ -529,15 +566,16 @@ class SharedObjects:
         self.alert = bool(change['new'])
         return
     def set_automate(self, change): 
+        clear_output()
         self.automate = bool(change['new'])
         return
-    def remove_proposal(self):
+    def remove_proposal(self, dummy=None):
         self.unsubscribe(self.prop)
         self.proposals = self.proposals.drop(self.prop)
         return
-    def make_purchase(self): 
+    def make_purchase(self, dummy=None): 
         self.buy('single')
         return
-    def makeall_purchase(self): 
+    def makeall_purchase(self, dummy=None): 
         self.buy('all')
         return
