@@ -10,4 +10,5 @@ ipywidgets
 pymysql 
 pynverse
 websocket-client
-threading
+ta
+multiprocess
